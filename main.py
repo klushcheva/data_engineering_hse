@@ -140,7 +140,7 @@ finally:
             data_files = get_data_files(data_folder)
             for file_group in data_files.values():
                 if file_group:
-                        all_files.append(file_group[0])
+                    all_files.append(file_group[0])
         except FileNotFoundError:
             logging.warning(f"Пропускаем несуществующий файл")
         if all_files:
