@@ -35,7 +35,6 @@ def truncate_staging_tables(conn):
 
 
 def execute_ddl(conn, ddl_path):
-    truncate_staging_tables(conn)
     try:
         with ddl_path.open('r') as file:
             ddl_commands = file.read()
@@ -46,4 +45,5 @@ def execute_ddl(conn, ddl_path):
     except Exception as e:
         conn.rollback()
         logging.error(f"Ошибка в создании таблиц: {e}")
-        raise
+        truncate_staging_tables(conn)
+        conn.commit()

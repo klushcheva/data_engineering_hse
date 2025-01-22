@@ -7,4 +7,3 @@ USER = "hseguest"
 PASSWORD = "hsepassword"
 
 REPO_ROOT_PATH = Path(__file__).parent.parent
-SOURCE_PATH = REPO_ROOT_PATH / "source"
