@@ -1,6 +1,6 @@
 -- 1. Совершение операции при заблокированном или просроченном паспорте
 INSERT INTO 
-    public.klus_rep_fraud (
+    public.klus_rep_fraud(
         event_dt,
         passport_num,
         fio,
@@ -9,109 +9,134 @@ INSERT INTO
         report_dt
     )
 SELECT
-    t.trans_date AS event_dt,
-    c.passport_num AS passport,
-    CONCAT(c.last_name, ' ', c.first_name, ' ', c.patronymic) AS fio,
-    c.phone AS phone,
+    kdft.trans_date AS event_dt,
+    kddc2.passport_num AS passport_num,
+    CONCAT(kddc2.last_name, ' ', kddc2.first_name, ' ', kddc2.patronymic) AS fio,
+    kddc2.phone AS phone,
     1 AS event_type,
-    t.trans_date::DATE AS report_dt
+    TO_DATE(%s, 'YYYY-MM-DD') AS report_dt
 FROM
-    public.klus_stg_transactions t
+    public.klus_dwh_fact_transactions kdft
 LEFT JOIN
-    public.klus_dwh_dim_cards cr
-ON
-    t.card_num = cr.card_num
+    public.klus_dwh_dim_cards kddc ON TRIM(kdft.card_num) = TRIM(kddc.card_num)
 LEFT JOIN
-    public.klus_dwh_dim_accounts acc
-ON
-    cr.account_num = acc.account_num
+    public.klus_dwh_dim_accounts kdda ON kddc.account_num = kdda.account_num
 LEFT JOIN
-    public.klus_dwh_dim_clients c
-ON
-    acc.client = c.client_id
-LEFT JOIN
-    public.klus_dwh_fact_passport_blacklist b
-ON
-    c.passport_num = b.passport_num
+    public.klus_dwh_dim_clients kddc2 ON kdda.client = kddc2.client_id
 WHERE
-    1 = 1 AND
-    b.passport_num IS NOT NULL
-    OR c.passport_valid_to < t.trans_date
-;
+    (
+        kddc2.passport_num IN (SELECT passport_num FROM public.klus_dwh_fact_passport_blacklist)
+        OR kddc2.passport_valid_to < DATE(kdft.trans_date)
+    )
+    AND NOT EXISTS (
+        SELECT 1
+        FROM public.klus_rep_fraud t
+        WHERE
+            t.event_dt = kdft.trans_date
+            AND t.passport_num = kddc2.passport_num
+            AND t.fio = CONCAT(kddc2.last_name, ' ', kddc2.first_name, ' ', kddc2.patronymic)
+            AND t.phone = kddc2.phone
+            AND t.event_type = 1
+    )
+GROUP BY
+    kdft.trans_date, kddc2.passport_num, fio, kddc2.phone;
 
 
 -- 2. Совершение операции при недействующем договоре
-INSERT INTO
-    public.klus_rep_fraud (
-        event_dt,
-        passport_num,
-        fio,
-        phone,
-        event_type,
-        report_dt
-    )
-SELECT
-    t.trans_date AS event_dt,
-    c.passport_num AS passport,
-    CONCAT(c.last_name, ' ', c.first_name, ' ', c.patronymic) AS fio,
-    c.phone AS phone,
-    2 AS event_type,
-    t.trans_date::DATE AS report_dt
-FROM
-    public.klus_stg_transactions t
-LEFT JOIN
-    public.klus_dwh_dim_cards cr
-ON
-    t.card_num = cr.card_num
-LEFT JOIN
-    public.klus_dwh_dim_accounts acc
-ON
-    cr.account_num = acc.account_num
-LEFT JOIN
-    public.klus_dwh_dim_clients c
-ON
-    acc.client = c.client_id
-WHERE
-    1=1 AND
-    acc.valid_to < t.trans_date
+INSERT into public.klus_rep_fraud(
+	event_dt,
+	passport_num,
+	fio,
+	phone,
+	event_type,
+	report_dt
+	)
+    SELECT DISTINCT
+        kdft.trans_date AS event_dt,
+	    kddc2.passport_num AS passport,
+	    CONCAT(kddc2.last_name, ' ', kddc2.first_name, ' ', kddc2.patronymic) AS fio,
+	    kddc2.phone AS phone,
+        2 as event_type,
+        TO_DATE(%s, 'YYYY-MM-DD') as report_dt
+    FROM
+	    public.klus_dwh_fact_transactions kdft
+	LEFT JOIN
+	    public.klus_dwh_dim_cards kddc ON TRIM(kdft.card_num) = TRIM(kddc.card_num)
+	LEFT JOIN
+	    public.klus_dwh_dim_accounts kdda ON kddc.account_num = kdda.account_num
+	LEFT JOIN
+	    public.klus_dwh_dim_clients kddc2 ON kdda.client = kddc2.client_id
+	WHERE
+	    kdda.valid_to < DATE(kdft.trans_date)
+	    AND NOT EXISTS (
+        SELECT 1
+        FROM public.klus_rep_fraud t
+        WHERE
+            t.event_dt = kdft.trans_date
+            AND t.passport_num = kddc2.passport_num
+            AND t.fio = CONCAT(kddc2.last_name, ' ', kddc2.first_name, ' ', kddc2.patronymic)
+            AND t.phone = kddc2.phone
+            AND t.event_type = 2
+    );
 ;
 
 -- 3. Совершение операций в разных городах в течение одного часа
-INSERT INTO
-    public.klus_rep_fraud (
+WITH ranked_transactions AS (
+    SELECT
         event_dt,
+        card_num,
+        terminal_city,
         passport_num,
         fio,
         phone,
-        event_type,
-        report_dt
-    )
-SELECT
-    t1.trans_date AS event_dt,
-    c.passport_num AS passport,
-    CONCAT(c.last_name, ' ', c.first_name, ' ', c.patronymic) AS fio,
-    c.phone AS phone,
-    3 AS event_type,
-    t1.trans_date::DATE AS report_dt
+        ROW_NUMBER() OVER (PARTITION BY card_num ORDER BY event_dt) AS rn
+    FROM
+        (SELECT kdft.trans_date AS event_dt,
+        		TRIM(kgdc.card_num) AS card_num,
+        		kddt.terminal_city AS terminal_city,
+     			kddc2.passport_num AS passport_num,
+     			CONCAT(kddc2.last_name, ' ', kddc2.first_name, ' ', kddc2.patronymic) AS fio,
+     			kddc2.phone AS phone
+        		from public.klus_dwh_fact_transactions kdft
+			left join public.klus_dwh_dim_cards kgdc ON TRIM(kdft.card_num) = TRIM(kgdc.card_num)
+			left join public.klus_dwh_dim_accounts kdda ON kgdc.account_num = kdda.account_num
+			left join public.klus_dwh_dim_clients kddc2 ON kdda.client = kddc2.client_id
+			left join public.klus_dwh_dim_terminals kddt ON kdft.terminal = kddt.terminal_id)
+ AS inner_query)
+INSERT INTO
+	public.klus_rep_fraud(
+		event_dt,
+		passport_num,
+		fio,
+		phone,
+		event_type,
+		report_dt
+	)
+SELECT DISTINCT
+    t1.event_dt,
+    t1.passport_num,
+    t1.fio,
+    t1.phone,
+	3 as event_type,
+	to_date(%s, 'YYYY-MM-DD') as report_dt
 FROM
-    public.klus_stg_transactions t1
-INNER JOIN
-    public.klus_dwh_dim_cards cr ON t1.card_num = cr.card_num
-INNER JOIN
-    public.klus_dwh_dim_accounts acc ON cr.account_num = acc.account_num
-INNER JOIN
-    public.klus_dwh_dim_clients c ON acc.client = c.client_id
-INNER JOIN
-    public.klus_dwh_dim_terminals ter1 ON t1.terminal = ter1.terminal_id
-INNER JOIN
-    public.klus_stg_transactions t2 ON
-        t1.trans_id <> t2.trans_id AND
-        t1.card_num = t2.card_num
-INNER JOIN
-    public.klus_dwh_dim_terminals ter2 ON t2.terminal = ter2.terminal_id
+    ranked_transactions t1
+JOIN
+    ranked_transactions t2 ON t1.card_num = t2.card_num
 WHERE
-    t1.trans_date BETWEEN t2.trans_date - INTERVAL '1 hour' AND t2.trans_date + INTERVAL '1 hour' AND
-    ter1.terminal_city <> ter2.terminal_city
+    t1.terminal_city <> t2.terminal_city
+    AND t1.rn <> t2.rn
+    AND ABS(EXTRACT(EPOCH FROM (t1.event_dt - t2.event_dt))) <= 3600
+    AND NOT EXISTS (
+        SELECT 1
+        FROM public.klus_rep_fraud t3
+        WHERE
+            t3.event_dt = t1.event_dt
+            AND t3.passport_num = t1.passport_num
+            AND t3.fio = t1.fio
+            AND t3.phone = t1.phone
+            AND t3.event_type = 3
+    );
 ;
 
 -- type 4. Попытка подбора суммы

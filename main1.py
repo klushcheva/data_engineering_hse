@@ -23,16 +23,18 @@ try:
     with establish_connection(config) as conn:
         execute_ddl(conn, ddl_path)
 
-        files = os.listdir(data_folder)
-        passport_blacklist_files = sorted([f for f in files if f.startswith("passport_blacklist_")])
-        terminals_files = sorted([f for f in files if f.startswith("terminals_")])
-        transactions_files = sorted([f for f in files if f.startswith("transactions_")])
+        passport_blacklist_files, terminals_files, transactions_files = get_data_files(data_folder)
 
         dates = [f[10:18] for f in terminals_files]
         formatted_dates = [f"{date[4:]}-{date[2:4]}-{date[:2]}" for date in dates]
 
         #прочитаем транзакции и причешем файл
-        transactions = pd.read_csv(os.path.join(data_folder, transactions_files[0]), sep=';')
+        try:
+            transactions = pd.read_csv(os.path.join(data_folder, transactions_files[1]), sep=';')
+            logging.info(f"Успешно прочитали файл {transactions}")
+        except Exception as e:
+            logging.error(f"Ошибка чтения файла {transactions}: {e}")
+
         transactions["amount"] = transactions["amount"] \
             .astype(str) \
             .str.strip() \
@@ -52,8 +54,8 @@ try:
                 print(f"Ошибка вставки данных 'transactions' в стейджинг: {e}")
 
         # прочитаем терминалы и добавим даты
-        terminals = pd.read_excel(os.path.join(data_folder, terminals_files[0]))
-        terminals['create_dt'] = formatted_dates[0]
+        terminals = pd.read_excel(os.path.join(data_folder, terminals_files[1]))
+        terminals['create_dt'] = formatted_dates[1]
 
         #загрузим терминалы в стейджинг
         query = open(Path.cwd()/"scripts"/"sql_scripts"/"terminals_2stg.sql", "r").read()
@@ -67,8 +69,9 @@ try:
                 print(f"Ошибка вставки данных 'terminals' в стейджинг: {e}")
 
         # прочитаем паспорта и причешем файл
-        passport_blacklist = pd.read_excel(os.path.join(data_folder, passport_blacklist_files[0]))
+        passport_blacklist = pd.read_excel(os.path.join(data_folder, passport_blacklist_files[1]))
         passport_blacklist.rename(columns={"date":"entry_dt","passport":"passport_num"})
+
         #щзагрузим паспорта в стейджинг
         query = open(Path.cwd()/"scripts"/"sql_scripts"/"passport_blacklist_2stg.sql", "r").read()
         with conn.cursor() as cursor:
@@ -120,7 +123,7 @@ try:
             except Exception as e:
                 logging.error(f"Ошибка выполнения скрипта {script}: {e}")
 
-        # сгенерируем таблицу с отчетом
+        # сгенерируем таблицу с результатами
         report_dt = datetime.now().strftime('%Y-%m-%d')
         process_reports(conn, report_dt)
 
@@ -128,30 +131,26 @@ except Exception as e:
     logging.critical(f"Операция остановлена, ошибка: {e}")
 else:
     logging.info("Все операции успешно завершены.")
-"""finally:
-    # Archive processed files
+finally:
+    # архивируем файлы
     try:
         all_files = []
-        sub_dirs = ["passports", "terminals", "transactions"]
 
-        for sub_dir in sub_dirs:
-            current_dir = Path.cwd()/f"{data_folder}/{sub_dir}"
-            try:
-                data_files = get_data_files(current_dir)
-                for file_group in data_files.values():
-                    if file_group:
+        try:
+            data_files = get_data_files(data_folder)
+            for file_group in data_files.values():
+                if file_group:
                         all_files.append(file_group[0])
-            except FileNotFoundError:
-                logging.warning(f"Skipping non-existent directory: '{current_dir}'")
-
+        except FileNotFoundError:
+            logging.warning(f"Пропускаем несуществующий файл")
         if all_files:
-            ###archive_files(all_files, archive_folder)
+            archive_files(all_files, archive_folder)
         else:
-            logging.info("No files to archive.")
+            logging.info("Файлов для архивации не обнаружено")
 
     except Exception as e:
-        logging.error(f"An unexpected error occurred during archiving: {e}")
-"""
-logging.info(f'Отчет загружен.')
+        logging.error(f"Возникла ошибка при архивации: {e}")
+
+logging.info(f'Таблица с результатами загружена.')
 
 conn.close()
